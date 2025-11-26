@@ -1270,32 +1270,12 @@ def reservation_update_api(request, pk: int):
         return Response({'status': 'error', 'message': 'Invalid status'}, status=400)
 
     # =====================================================
-    # STOCK HANDLING
+    # ❌ STOCK HANDLING — REMOVED (DATE-BASED SYSTEM)
     # =====================================================
-    def restore_stock():
-        for it in r.items.all():
-            item = it.item
-            item.qty += it.quantity
-            item.save(update_fields=["qty"])
-
-    def deduct_stock():
-        for it in r.items.all():
-            item = it.item
-            if item.qty < it.quantity:
-                raise ValueError(f"Not enough stock for {item.name}")
-            item.qty -= it.quantity
-            item.save(update_fields=["qty"])
+    # No deduct_stock()
+    # No restore_stock()
 
     prev = r.status
-
-    if prev == "pending" and new_status == "approved":
-        deduct_stock()
-
-    elif prev in ["pending", "approved"] and new_status == "rejected":
-        restore_stock()
-
-    elif new_status == "returned":
-        restore_stock()
 
     # =====================================================
     # TIMESTAMPS
@@ -1320,7 +1300,6 @@ def reservation_update_api(request, pk: int):
     now = timezone.now()
 
     def push_future(dt):
-        """Push any past or 'now' schedule at least 2 minutes forward."""
         if dt <= now:
             return now + timedelta(minutes=2)
         return dt
@@ -1328,7 +1307,7 @@ def reservation_update_api(request, pk: int):
     def schedule_smart_alerts(reservation):
         borrower = reservation.userborrower
 
-        # ---------- 1️⃣ Return Reminder (6PM day before return date)
+        # ---------- 1️⃣ Return Reminder
         return_day_before = reservation.date_return - timedelta(days=1)
         dt1 = make_aware(datetime.combine(return_day_before, time(18, 0)))
         dt1 = push_future(dt1)
@@ -1343,7 +1322,7 @@ def reservation_update_api(request, pk: int):
             is_sent=False
         )
 
-        # ---------- 2️⃣ Claim Reminder (6AM on claim date)
+        # ---------- 2️⃣ Claim Reminder
         dt2 = make_aware(datetime.combine(reservation.date_borrowed, time(6, 0)))
         dt2 = push_future(dt2)
 
@@ -1357,7 +1336,7 @@ def reservation_update_api(request, pk: int):
             is_sent=False
         )
 
-        # ---------- 3️⃣ Claim Delay Warning (1 hour after created_at)
+        # ---------- 3️⃣ Claim Delay Warning
         dt3 = reservation.created_at + timedelta(hours=1)
         dt3 = push_future(dt3)
 
@@ -1376,10 +1355,9 @@ def reservation_update_api(request, pk: int):
         schedule_smart_alerts(r)
 
     # =====================================================
-    # INSTANT NOTIFICATIONS (These appear immediately)
+    # INSTANT NOTIFICATIONS
     # =====================================================
 
-    # ----------- PENDING -----------
     if new_status == "pending":
         Notification.objects.create(
             user=r.userborrower,
@@ -1390,10 +1368,8 @@ def reservation_update_api(request, pk: int):
             is_sent=True
         )
 
-    # ----------- APPROVED -----------
     elif new_status == "approved":
 
-        # Build QR content
         qr_lines = [
             f"Transaction: {r.transaction_id}",
             f"Borrower: {r.userborrower.full_name}",
@@ -1406,7 +1382,6 @@ def reservation_update_api(request, pk: int):
 
         qr_data = "\n".join(qr_lines)
 
-        # Generate QR
         qr_img = qrcode.make(qr_data)
         buffer = BytesIO()
         qr_img.save(buffer, format='PNG')
@@ -1422,7 +1397,6 @@ def reservation_update_api(request, pk: int):
         )
         notif.qr_code.save(f"qr_{r.transaction_id}.png", qr_file)
 
-    # ----------- REJECTED -----------
     elif new_status == "rejected":
         Notification.objects.create(
             user=r.userborrower,
@@ -1435,6 +1409,7 @@ def reservation_update_api(request, pk: int):
         )
 
     return Response({"status": "success"})
+
 
 
 
@@ -1629,39 +1604,28 @@ class CreateReservationView(APIView):
         try:
             borrower = UserBorrower.objects.get(user=request.user)
 
-            # MAIN ITEM
             main_item_id = int(request.data.get("main_item_id"))
             main_item_qty = int(request.data.get("main_item_qty"))
-
-            # ADDITIONAL ITEMS
             added_items = json.loads(request.data.get("added_items", "[]"))
 
-            # Dates
             start_date = date.fromisoformat(request.data.get("start_date"))
             end_date = date.fromisoformat(request.data.get("end_date"))
 
-            # REASON
             priority = request.data.get("priority", "Low")
             priority_detail = request.data.get("priority_detail", "")
-
-            # Message
             message = request.data.get("message", "")
 
-            # Files
             letter_img = request.FILES.get("letter_image")
             valid_id_img = request.FILES.get("valid_id_image")
 
-            # Contact
             contact_number = request.data.get("contact", borrower.contact_number)
 
         except Exception as e:
             return Response({"detail": "Invalid payload", "error": str(e)}, status=400)
 
-        # Validate date
         if start_date > end_date:
             return Response({"detail": "Invalid date range"}, status=400)
 
-        # CREATE RESERVATION
         reservation = Reservation.objects.create(
             userborrower=borrower,
             date_borrowed=start_date,
@@ -1675,10 +1639,8 @@ class CreateReservationView(APIView):
             contact=contact_number,
         )
 
-        # Assign transaction ID
         reservation.save()
 
-        # Helper
         def validate_and_add(item_id, qty):
             item = Item.objects.select_for_update().get(item_id=item_id)
 
@@ -1702,21 +1664,16 @@ class CreateReservationView(APIView):
                 quantity=qty
             )
 
-            if reserved_qty + qty >= item.qty:
-                item.status = "Not Available"
-            else:
-                item.status = "Available"
+            # ❌ REMOVED WRONG GLOBAL STOCK/STATUS MUTATION
+            # item.status = ...
+            # item.save()
 
-            item.save(update_fields=["status"])
-
-        # MAIN
         try:
             validate_and_add(main_item_id, main_item_qty)
         except Exception as e:
             reservation.delete()
             return Response({"detail": str(e)}, status=409)
 
-        # ADDITIONALS
         for it in added_items:
             try:
                 validate_and_add(int(it["id"]), int(it["qty"]))
@@ -1724,7 +1681,6 @@ class CreateReservationView(APIView):
                 reservation.delete()
                 return Response({"detail": str(e)}, status=409)
 
-        # NOTIFY
         Notification.objects.create(
             user=borrower,
             reservation=reservation,
@@ -1739,7 +1695,6 @@ class CreateReservationView(APIView):
             "reservation_id": reservation.id,
             "transaction_id": reservation.transaction_id
         }, status=201)
-
 
 
 

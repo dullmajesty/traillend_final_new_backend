@@ -1,30 +1,43 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from core.models import Notification
+from core.models import Notification, DeviceToken
+from firebase_admin import messaging
 
 class Command(BaseCommand):
-    help = "Send scheduled notifications (mark is_sent=True and make visible)"
+    help = "Send scheduled notifications"
 
     def handle(self, *args, **kwargs):
         now = timezone.now()
 
-        # Find all notifications that are due but not sent yet
-        pending = Notification.objects.filter(
-            scheduled_at__lte=now,
-            is_sent=False
-        )
+        notifications = Notification.objects.filter(
+            is_sent=False,
+            scheduled_at__lte=now
+        ).select_related("user")
 
-        if not pending.exists():
-            self.stdout.write("No scheduled notifications to send.")
-            return
+        sent_count = 0
 
-        for notif in pending:
-            # Mark as sent so it appears in the app
-            notif.is_sent = True
-            notif.save(update_fields=['is_sent'])
+        for n in notifications:
+            borrower = n.user
 
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"[SENT] {notif.title} → User: {notif.user.full_name}"
+            token_entry = DeviceToken.objects.filter(user=borrower).last()
+            if not token_entry:
+                continue
+
+            try:
+                message = messaging.Message(
+                    notification=messaging.Notification(
+                        title=n.title,
+                        body=n.message
+                    ),
+                    token=token_entry.token
                 )
-            )
+
+                messaging.send(message)
+                n.is_sent = True
+                n.save()
+                sent_count += 1
+
+            except Exception as e:
+                print("Error sending notification:", e)
+
+        print(f"Sent {sent_count} notifications.")
