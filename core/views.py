@@ -974,7 +974,7 @@ def api_register(request):
 
 
             # 🧩 Local development link — works, but user won't see the IP
-            verify_url = f"http://192.168.1.8:8000/api/verify-email/{uid}/{token}/"
+            verify_url = f"http://172.22.41.188:8000/api/verify-email/{uid}/{token}/"
 
 
             # HTML Email Template
